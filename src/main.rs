@@ -1,16 +1,30 @@
-use std::{collections::HashSet, env, fs, io::{self, Write}, path::{Path, PathBuf}, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+    io::{self, Write},
+    path::{Path},
+    time::Instant,
+};
 use chrono::{Local, DateTime};
-use walkdir::WalkDir;
 use fern::Dispatch;
 use log::{info, error};
+use walkdir::WalkDir;
 use sha2::{Sha256, Digest};
 use std::fs::File;
 use std::io::Read;
 
+// -----------------------------------------------------------
+// Logging Setup
+// -----------------------------------------------------------
 fn setup_logger() -> Result<(), fern::InitError> {
     Dispatch::new()
         .format(|out, message, record| {
-            out.finish(format_args!("{} [{}] - {}", Local::now().format("%Y-%m-%d %H:%M:%S"), record.level(), message))
+            out.finish(format_args!(
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                message
+            ))
         })
         .level(log::LevelFilter::Info)
         .chain(std::fs::File::create("missing_file_finder.log")?)
@@ -18,44 +32,147 @@ fn setup_logger() -> Result<(), fern::InitError> {
     Ok(())
 }
 
-fn collect_files(root: &Path, use_hashing: bool) -> io::Result<HashSet<String>> {
-    let mut files = HashSet::new();
+// -----------------------------------------------------------
+// Helpers for collecting file names or file hashes
+// -----------------------------------------------------------
+
+/// Collects file names (relative paths) as a `HashSet`.
+fn collect_file_names(root: &Path) -> io::Result<HashSet<String>> {
+    let mut names = HashSet::new();
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file() {
             if let Ok(relative) = entry.path().strip_prefix(root) {
-                let file_identifier = if use_hashing {
-                    match compute_hash(entry.path()) {
-                        Ok(hash) => hash,
-                        Err(_) => continue,
-                    }
-                } else {
-                    relative.to_string_lossy().to_string()
-                };
-                files.insert(file_identifier);
+                // Normalize path separators
+                let file_str = relative.to_string_lossy().replace('\\', "/");
+                names.insert(file_str);
             }
         }
     }
-    Ok(files)
+    Ok(names)
 }
 
+
+/// Collects file hashes as a `HashMap<hash, Vec<relative_path>>`.
+/// We use a map because multiple files can share the same hash.
+fn collect_file_hashes(root: &Path) -> io::Result<HashMap<String, Vec<String>>> {
+    let mut hash_map: HashMap<String, Vec<String>> = HashMap::new();
+
+    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        if entry.file_type().is_file() {
+            if let Ok(relative) = entry.path().strip_prefix(root) {
+                // Normalize path separators
+                let file_str = relative.to_string_lossy().replace('\\', "/");
+                match compute_hash(entry.path()) {
+                    Ok(hash) => {
+                        hash_map.entry(hash).or_default().push(file_str);
+                    }
+                    Err(e) => {
+                        error!("Failed to hash file {:?}: {}", entry.path(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(hash_map)
+}
+
+
+/// Computes SHA-256 hash of the file.
 fn compute_hash(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut buffer = [0; 8192];
     let mut hasher = Sha256::new();
 
-    let bytes_read = file.read(&mut buffer)?;
-    hasher.update(&buffer[..bytes_read]);
-    
-    if bytes_read == 8192 {
-        let mut remaining_bytes = vec![];
-        file.read_to_end(&mut remaining_bytes)?;
-        hasher.update(&remaining_bytes);
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
     }
 
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn write_report(report_filename: &str, user: &str, start_timestamp: &DateTime<Local>, end_timestamp: &DateTime<Local>, duration: &std::time::Duration, source_dir: &Path, target_dir: &Path, compare_mode: &str, missing_files: &[PathBuf]) -> io::Result<()> {
+// -----------------------------------------------------------
+// Missing-files extraction function
+// -----------------------------------------------------------
+
+/// Given a source directory, target directory, and a compare mode ("name" or "hash"),
+/// returns a list of files in `source_dir` that are *not* present in `target_dir`.
+/// 
+/// - **"name"** mode: We compare relative filenames, ignoring content.
+/// - **"hash"** mode: We compare file content (hashes). 
+///   If a file’s content from source is not found in target (by hash), 
+///   that file is considered missing.
+/// 
+/// The returned `Vec<String>` will list missing entries. In `hash` mode,
+/// each missing file is listed as `"relative_path (hash)"`.
+pub fn find_missing_files(
+    source_dir: &Path,
+    target_dir: &Path,
+    compare_mode: &str,
+) -> io::Result<Vec<String>> {
+    match compare_mode {
+        "name" => {
+            let source_names = collect_file_names(source_dir)?;
+            let target_names = collect_file_names(target_dir)?;
+            let missing = source_names
+                .difference(&target_names)
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(missing)
+        }
+        "hash" => {
+            let source_hashes = collect_file_hashes(source_dir)?;
+            let target_hashes = collect_file_hashes(target_dir)?;
+
+            // Convert the keys (hashes) into sets for easier difference
+            let source_keys: HashSet<_> = source_hashes.keys().cloned().collect();
+            let target_keys: HashSet<_> = target_hashes.keys().cloned().collect();
+
+            // Find which hashes from source do not appear in target
+            let missing_hashes = source_keys.difference(&target_keys);
+
+            // For each missing hash, collect the filenames
+            let mut results = Vec::new();
+            for mh in missing_hashes {
+                if let Some(file_list) = source_hashes.get(mh) {
+                    for f in file_list {
+                        // We'll record missing files as "relative_path (hash)"
+                        results.push(format!("{} ({})", f, mh));
+                    }
+                }
+            }
+            Ok(results)
+        }
+        _ => {
+            // Invalid compare mode
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Invalid compare mode '{}'. Use 'name' or 'hash'.", compare_mode),
+            ))
+        }
+    }
+}
+
+// -----------------------------------------------------------
+// Reporting
+// -----------------------------------------------------------
+
+/// Writes the final report.
+fn write_report(
+    report_filename: &str,
+    user: &str,
+    start_timestamp: &DateTime<Local>,
+    end_timestamp: &DateTime<Local>,
+    duration: &std::time::Duration,
+    source_dir: &Path,
+    target_dir: &Path,
+    compare_mode: &str,
+    missing_files: &[String],
+) -> io::Result<()> {
     let mut report = fs::File::create(report_filename)?;
     writeln!(report, "User: {}", user)?;
     writeln!(report, "Start Time: {}", start_timestamp.format("%Y-%m-%d %H:%M:%S"))?;
@@ -64,57 +181,421 @@ fn write_report(report_filename: &str, user: &str, start_timestamp: &DateTime<Lo
     writeln!(report, "Source Directory: {:?}", source_dir)?;
     writeln!(report, "Target Directory: {:?}", target_dir)?;
     writeln!(report, "Comparison Method: {}\n", compare_mode)?;
-    writeln!(report, "Files present in source directory, but not the target directory:")?;
+
+    writeln!(
+        report,
+        "Files present in source directory, but not in target directory:"
+    )?;
     if missing_files.is_empty() {
         writeln!(report, "None")?;
     } else {
         for file in missing_files {
-            writeln!(report, "{}", file.display())?;
+            writeln!(report, "{}", file)?;
         }
-    } 
-    
+    }
+
     Ok(())
 }
 
+// -----------------------------------------------------------
+// Main
+// -----------------------------------------------------------
 fn main() -> io::Result<()> {
+    // Setup logging
     setup_logger().expect("Failed to initialize logger");
-    
+
+    // Parse args
     let args: Vec<String> = env::args().collect();
     if args.len() != 4 {
         eprintln!("Usage: {} <source_dir> <target_dir> <compare_mode: name|hash>", args[0]);
         return Ok(());
     }
-    
+
     let source_dir = Path::new(&args[1]);
     let target_dir = Path::new(&args[2]);
-    let compare_mode = &args[3];
-    let use_hashing = compare_mode == "hash";
-    
+    let compare_mode = args[3].as_str();
+
+    // Validate directories
     if !source_dir.is_dir() || !target_dir.is_dir() {
         eprintln!("Both arguments must be valid directories.");
         return Ok(());
     }
-    
+
     let start_time = Instant::now();
-    let start_timestamp: DateTime<Local> = Local::now();
-    
-    info!("Starting comparison between {:?} and {:?} using {:?} mode", source_dir, target_dir, compare_mode);
-    
-    let source_files = collect_files(source_dir, use_hashing)?;
-    let target_files = collect_files(target_dir, use_hashing)?;
-    
-    let missing_files: Vec<PathBuf> = source_files.difference(&target_files)
-        .map(|file| source_dir.join(file))
-        .collect();
-    
-    let end_timestamp: DateTime<Local> = Local::now();
+    let start_timestamp = Local::now();
+
+    info!(
+        "Starting comparison between {:?} and {:?} using '{}' mode",
+        source_dir, target_dir, compare_mode
+    );
+
+    // We'll collect missing files differently depending on compare mode.
+    let missing_files = match find_missing_files(source_dir, target_dir, compare_mode) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return Ok(()); // or return Err(e) if you prefer
+        }
+    };
+
+    let end_timestamp = Local::now();
     let duration = start_time.elapsed();
-    
+
     let report_filename = "missing_files_report.txt";
-    write_report(report_filename, &env::var("USER").unwrap_or_else(|_| "Unknown".into()), &start_timestamp, &end_timestamp, &duration, source_dir, target_dir, compare_mode, &missing_files)?;
-    
+    let user = env::var("USER").unwrap_or_else(|_| "Unknown".into());
+
+    write_report(
+        report_filename,
+        &user,
+        &start_timestamp,
+        &end_timestamp,
+        &duration,
+        source_dir,
+        target_dir,
+        compare_mode,
+        &missing_files,
+    )?;
+
     info!("Comparison completed. {} missing files found.", missing_files.len());
     info!("Report saved to {}", report_filename);
-    
+
     Ok(())
 }
+
+// -----------------------------------------------------------
+// Unit Tests
+// -----------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs::{self, File};
+    use std::io::Write as IoWrite;
+
+    #[test]
+    fn test_collect_file_names() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("sub"))?;
+        File::create(root.join("file1.txt"))?.sync_all()?;
+        File::create(root.join("sub/file2.txt"))?.sync_all()?;
+
+        let names = collect_file_names(root)?;
+
+        assert_eq!(names.len(), 2);
+        assert!(names.contains("file1.txt"));
+        assert!(names.contains("sub/file2.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_file_hashes() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("sub"))?;
+        {
+            let mut f1 = File::create(root.join("file1.txt"))?;
+            write!(f1, "Hello World!")?;
+        }
+        {
+            let mut f2 = File::create(root.join("sub/file2.txt"))?;
+            write!(f2, "This is a test!")?;
+        }
+
+        let hash_map = collect_file_hashes(root)?;
+        assert_eq!(hash_map.len(), 2, "Should have two distinct hashes.");
+
+        let mut total_files = 0;
+        for list in hash_map.values() {
+            total_files += list.len();
+        }
+        assert_eq!(total_files, 2);
+
+        let all_filenames: Vec<&String> = hash_map.values().flatten().collect();
+        assert!(all_filenames.contains(&&"file1.txt".to_string()));
+        assert!(all_filenames.contains(&&"sub/file2.txt".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_hash_same_content() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+
+        // Write two files with the same content
+        let content = b"SAME_CONTENT";
+        let file_a = root.join("a.txt");
+        let file_b = root.join("b.txt");
+
+        fs::write(&file_a, content)?;
+        fs::write(&file_b, content)?;
+
+        let hash_a = compute_hash(&file_a)?;
+        let hash_b = compute_hash(&file_b)?;
+
+        assert_eq!(hash_a, hash_b, "Files with the same content must have the same hash");
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_hash_diff_content() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+
+        // Write two files with different content
+        let file_a = root.join("a.txt");
+        let file_b = root.join("b.txt");
+
+        fs::write(&file_a, b"CONTENT_A")?;
+        fs::write(&file_b, b"CONTENT_B")?;
+
+        let hash_a = compute_hash(&file_a)?;
+        let hash_b = compute_hash(&file_b)?;
+
+        assert_ne!(hash_a, hash_b, "Files with different content must not have the same hash");
+        Ok(())
+    }
+
+    #[test]
+    fn test_name_comparison_no_missing() -> io::Result<()> {
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::create_dir_all(src_root.join("sub"))?;
+        fs::create_dir_all(tgt_root.join("sub"))?;
+
+        fs::write(src_root.join("file1.txt"), b"Hello")?;
+        fs::write(src_root.join("sub/file2.txt"), b"Hello")?;
+
+        fs::write(tgt_root.join("file1.txt"), b"World")?;
+        fs::write(tgt_root.join("sub/file2.txt"), b"World")?;
+
+        let source_names = collect_file_names(src_root)?;
+        let target_names = collect_file_names(tgt_root)?;
+        let missing: Vec<String> = source_names.difference(&target_names).cloned().collect();
+
+        assert!(missing.is_empty(), "Expected no missing files by name comparison.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_name_comparison_some_missing() -> io::Result<()> {
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("file1.txt"), b"A")?;
+        fs::write(src_root.join("file2.txt"), b"B")?;
+        fs::write(tgt_root.join("file1.txt"), b"A")?;
+
+        let source_names = collect_file_names(src_root)?;
+        let target_names = collect_file_names(tgt_root)?;
+        let missing: Vec<String> = source_names.difference(&target_names).cloned().collect();
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], "file2.txt");
+        Ok(())
+    }
+
+    #[test]
+    fn test_hash_comparison_no_missing() -> io::Result<()> {
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("a.txt"), b"IDENTICAL_CONTENT")?;
+        fs::write(src_root.join("b.txt"), b"ANOTHER_CONTENT")?;
+        fs::write(tgt_root.join("x.txt"), b"IDENTICAL_CONTENT")?;
+        fs::write(tgt_root.join("y.txt"), b"ANOTHER_CONTENT")?;
+
+        let src_hashes = collect_file_hashes(src_root)?;
+        let tgt_hashes = collect_file_hashes(tgt_root)?;
+
+        let src_keys: HashSet<_> = src_hashes.keys().cloned().collect();
+        let tgt_keys: HashSet<_> = tgt_hashes.keys().cloned().collect();
+        let missing_keys = src_keys.difference(&tgt_keys);
+
+        assert_eq!(missing_keys.count(), 0, "No hash should be missing.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_hash_comparison_some_missing() -> io::Result<()> {
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("file1.txt"), b"SRC_CONTENT_1")?;
+        fs::write(src_root.join("file2.txt"), b"SRC_CONTENT_2")?;
+        fs::write(tgt_root.join("fileA.txt"), b"SRC_CONTENT_1")?;
+
+        let src_hashes = collect_file_hashes(src_root)?;
+        let tgt_hashes = collect_file_hashes(tgt_root)?;
+
+        let src_keys: HashSet<_> = src_hashes.keys().cloned().collect();
+        let tgt_keys: HashSet<_> = tgt_hashes.keys().cloned().collect();
+        let missing_keys: Vec<_> = src_keys.difference(&tgt_keys).cloned().collect();
+
+        assert_eq!(missing_keys.len(), 1, "Expect exactly 1 missing hash.");
+        let missing_hash = missing_keys[0].as_str();
+        let missing_files_for_hash = &src_hashes[missing_hash];
+        assert_eq!(missing_files_for_hash.len(), 1);
+        assert_eq!(missing_files_for_hash[0], "file2.txt");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_hash_comparison_same_hash_different_filenames() -> io::Result<()> {
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("file1.txt"), b"COMMON_CONTENT")?;
+        fs::write(src_root.join("file2.txt"), b"COMMON_CONTENT")?;
+        fs::write(tgt_root.join("target_file1.txt"), b"COMMON_CONTENT")?;
+
+        let src_hashes = collect_file_hashes(src_root)?;
+        let tgt_hashes = collect_file_hashes(tgt_root)?;
+
+        let src_keys: HashSet<_> = src_hashes.keys().cloned().collect();
+        let tgt_keys: HashSet<_> = tgt_hashes.keys().cloned().collect();
+        let missing_keys: Vec<_> = src_keys.difference(&tgt_keys).cloned().collect();
+
+        assert!(missing_keys.is_empty(), "Should have no missing hash.");
+        Ok(())
+    }
+    #[test]
+    fn test_find_missing_files_name_no_missing() -> io::Result<()> {
+        // Both directories have the same filenames, so no missing files.
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::create_dir_all(src_root.join("sub"))?;
+        fs::create_dir_all(tgt_root.join("sub"))?;
+
+        fs::write(src_root.join("file1.txt"), b"Hello")?;
+        fs::write(src_root.join("sub/file2.txt"), b"Hello")?;
+
+        fs::write(tgt_root.join("file1.txt"), b"World")?;
+        fs::write(tgt_root.join("sub/file2.txt"), b"World")?;
+
+        // Compare by name
+        let missing = find_missing_files(src_root, tgt_root, "name")?;
+        assert!(missing.is_empty(), "Expected no missing files by name comparison.");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_missing_files_name_some_missing() -> io::Result<()> {
+        // Source has an extra file not in target
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("file1.txt"), b"A")?;
+        fs::write(src_root.join("file2.txt"), b"B")?;
+        fs::write(tgt_root.join("file1.txt"), b"A")?;
+
+        let missing = find_missing_files(src_root, tgt_root, "name")?;
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], "file2.txt");
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_missing_files_hash_no_missing() -> io::Result<()> {
+        // If content is the same, the files should not be considered missing in hash mode
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("a.txt"), b"IDENTICAL_CONTENT")?;
+        fs::write(src_root.join("b.txt"), b"ANOTHER_CONTENT")?;
+
+        fs::write(tgt_root.join("x.txt"), b"IDENTICAL_CONTENT")?;
+        fs::write(tgt_root.join("y.txt"), b"ANOTHER_CONTENT")?;
+
+        let missing = find_missing_files(src_root, tgt_root, "hash")?;
+        assert!(missing.is_empty(), "Expected no missing files by hash comparison.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_missing_files_hash_some_missing() -> io::Result<()> {
+        // Source has file2.txt that doesn't match anything in target
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("file1.txt"), b"SRC_CONTENT_1")?;
+        fs::write(src_root.join("file2.txt"), b"SRC_CONTENT_2")?;
+        fs::write(tgt_root.join("target1.txt"), b"SRC_CONTENT_1")?;
+
+        let missing = find_missing_files(src_root, tgt_root, "hash")?;
+        // We expect exactly 1 missing file: "file2.txt"
+        assert_eq!(missing.len(), 1);
+        // The missing file should be "file2.txt (HASH...)", with the real hash.
+        // We'll do a substring check for "file2.txt (" just to confirm:
+        assert!(missing[0].contains("file2.txt"));
+        assert!(missing[0].contains("(") && missing[0].contains(")"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_missing_files_hash_same_hash_multiple_filenames() -> io::Result<()> {
+        // Two files in source share the same hash, but target has only one
+        // with that content. Because the hash is present, none are missing.
+        let dir_src = TempDir::new()?;
+        let dir_tgt = TempDir::new()?;
+
+        let src_root = dir_src.path();
+        let tgt_root = dir_tgt.path();
+
+        fs::write(src_root.join("file1.txt"), b"COMMON_CONTENT")?;
+        fs::write(src_root.join("file2.txt"), b"COMMON_CONTENT")?;
+        fs::write(tgt_root.join("target_file.txt"), b"COMMON_CONTENT")?;
+
+        let missing = find_missing_files(src_root, tgt_root, "hash")?;
+        assert!(
+            missing.is_empty(),
+            "If the hash is present in the target, none should be missing."
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_missing_files_invalid_mode() {
+        let dir_src = TempDir::new().unwrap();
+        let dir_tgt = TempDir::new().unwrap();
+
+        let result = find_missing_files(dir_src.path(), dir_tgt.path(), "invalid_mode");
+        assert!(result.is_err(), "Invalid mode should return an Err.");
+    }
+}
+
