@@ -235,7 +235,7 @@ fn main() -> io::Result<()> {
         Err(e) => {
             eprintln!("Error: {}", e);
             error!("Error: {}", e);
-            return Err((e));
+            return Err(e);
         }
     };
 
