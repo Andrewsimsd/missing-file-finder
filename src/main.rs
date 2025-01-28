@@ -234,7 +234,8 @@ fn main() -> io::Result<()> {
         Ok(files) => files,
         Err(e) => {
             eprintln!("Error: {}", e);
-            return Ok(()); // or return Err(e) if you prefer
+            error!("Error: {}", e);
+            return Err((e));
         }
     };
 
