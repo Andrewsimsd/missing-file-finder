@@ -1,4 +1,4 @@
-# DMissing File Finder
+# Missing File Finder
 
 ## Overview
 This Rust application compares a source and target directory to identify files that exist in the source but are missing from the target. The target directory may have additional parent directories, and matches are detected accordingly. The tool can compare files by name or by hash for accuracy and efficiency.
