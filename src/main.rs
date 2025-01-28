@@ -12,6 +12,8 @@ use walkdir::WalkDir;
 use sha2::{Sha256, Digest};
 use std::fs::File;
 use std::io::Read;
+use rayon::prelude::*; // for parallel iterators
+
 
 // -----------------------------------------------------------
 // Logging Setup
@@ -36,6 +38,45 @@ fn setup_logger() -> Result<(), fern::InitError> {
 // Helpers for collecting file names or file hashes
 // -----------------------------------------------------------
 
+/// Collects file hashes in parallel, returning a `HashMap<hash, Vec<relative_path>>`.
+fn collect_file_hashes_parallel(root: &Path) -> io::Result<HashMap<String, Vec<String>>> {
+    // 1) Gather all file entries
+    let paths: Vec<_> = WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .collect();
+
+    // 2) Compute hashes in parallel
+    //    For each file, return Some((hash, relative_filename)) or None on error
+    let hashed_entries: Vec<(String, String)> = paths
+        .par_iter()
+        .filter_map(|entry| {
+            let rel_path = match entry.path().strip_prefix(root) {
+                Ok(rp) => rp.to_string_lossy().replace('\\', "/"),
+                Err(_) => return None,
+            };
+
+            match compute_hash(entry.path()) {
+                Ok(h) => Some((h, rel_path)),
+                Err(e) => {
+                    // you can log or handle error as needed
+                    error!("Failed to hash file {:?}: {}", entry.path(), e);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    // 3) Group by hash in a standard HashMap
+    let mut hash_map: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (hash, path_str) in hashed_entries {
+        hash_map.entry(hash).or_default().push(path_str);
+    }
+    Ok(hash_map)
+}
+
 /// Collects file names (relative paths) as a `HashSet`.
 fn collect_file_names(root: &Path) -> io::Result<HashSet<String>> {
     let mut names = HashSet::new();
@@ -50,33 +91,6 @@ fn collect_file_names(root: &Path) -> io::Result<HashSet<String>> {
     }
     Ok(names)
 }
-
-
-/// Collects file hashes as a `HashMap<hash, Vec<relative_path>>`.
-/// We use a map because multiple files can share the same hash.
-fn collect_file_hashes(root: &Path) -> io::Result<HashMap<String, Vec<String>>> {
-    let mut hash_map: HashMap<String, Vec<String>> = HashMap::new();
-
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-        if entry.file_type().is_file() {
-            if let Ok(relative) = entry.path().strip_prefix(root) {
-                // Normalize path separators
-                let file_str = relative.to_string_lossy().replace('\\', "/");
-                match compute_hash(entry.path()) {
-                    Ok(hash) => {
-                        hash_map.entry(hash).or_default().push(file_str);
-                    }
-                    Err(e) => {
-                        error!("Failed to hash file {:?}: {}", entry.path(), e);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(hash_map)
-}
-
 
 /// Computes SHA-256 hash of the file.
 fn compute_hash(path: &Path) -> io::Result<String> {
@@ -116,31 +130,28 @@ pub fn find_missing_files(
 ) -> io::Result<Vec<String>> {
     match compare_mode {
         "name" => {
+            // single-threaded is fine for collecting names
             let source_names = collect_file_names(source_dir)?;
             let target_names = collect_file_names(target_dir)?;
-            let missing = source_names
+            Ok(source_names
                 .difference(&target_names)
                 .cloned()
-                .collect::<Vec<_>>();
-            Ok(missing)
+                .collect::<Vec<_>>())
         }
         "hash" => {
-            let source_hashes = collect_file_hashes(source_dir)?;
-            let target_hashes = collect_file_hashes(target_dir)?;
+            // now use the new parallel version
+            let source_hashes = collect_file_hashes_parallel(source_dir)?;
+            let target_hashes = collect_file_hashes_parallel(target_dir)?;
 
-            // Convert the keys (hashes) into sets for easier difference
             let source_keys: HashSet<_> = source_hashes.keys().cloned().collect();
             let target_keys: HashSet<_> = target_hashes.keys().cloned().collect();
 
-            // Find which hashes from source do not appear in target
             let missing_hashes = source_keys.difference(&target_keys);
-
-            // For each missing hash, collect the filenames
             let mut results = Vec::new();
             for mh in missing_hashes {
                 if let Some(file_list) = source_hashes.get(mh) {
+                    // We'll format each missing file as "relative_path (hash)"
                     for f in file_list {
-                        // We'll record missing files as "relative_path (hash)"
                         results.push(format!("{} ({})", f, mh));
                     }
                 }
@@ -148,7 +159,6 @@ pub fn find_missing_files(
             Ok(results)
         }
         _ => {
-            // Invalid compare mode
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("Invalid compare mode '{}'. Use 'name' or 'hash'.", compare_mode),
@@ -156,6 +166,7 @@ pub fn find_missing_files(
         }
     }
 }
+
 
 // -----------------------------------------------------------
 // Reporting
