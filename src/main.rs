@@ -13,7 +13,7 @@ fn setup_logger() -> Result<(), fern::InitError> {
             out.finish(format_args!("{} [{}] - {}", Local::now().format("%Y-%m-%d %H:%M:%S"), record.level(), message))
         })
         .level(log::LevelFilter::Info)
-        .chain(std::fs::File::create("compare_directories.log")?)
+        .chain(std::fs::File::create("missing_file_finder.log")?)
         .apply()?;
     Ok(())
 }
