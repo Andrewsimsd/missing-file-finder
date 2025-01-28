@@ -30,8 +30,8 @@ Run the application from the command line:
 ```
 
 **Arguments:**
-- `<source_directory>`: Path to the source directory.
-- `<target_directory>`: Path to the target directory.
+- `<source_directory>`: Path to the source directory. (The directory that contains the files you want to check for)
+- `<target_directory>`: Path to the target directory. (The directory that that you want to check if the files exist in)
 - `<comparison_method>`: Either `name` for filename-based comparison or `hash` for content-based comparison.
 
 ### Example:
