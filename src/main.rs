@@ -302,6 +302,32 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_file_hashes_parallel() -> io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join("sub"))?;
+        {
+            let mut f1 = File::create(root.join("file1.txt"))?;
+            write!(f1, "Hello World!")?;
+        }
+        {
+            let mut f2 = File::create(root.join("sub/file2.txt"))?;
+            write!(f2, "This is a test!")?;
+        }
+        let hash_map = collect_file_hashes_parallel(root)?;
+        assert_eq!(hash_map.len(), 2, "Should have two distinct hashes.");
+        let mut total_files = 0;
+        for list in hash_map.values() {
+            total_files += list.len();
+        }
+        assert_eq!(total_files, 2);
+        let all_filenames: Vec<&String> = hash_map.values().flatten().collect();
+        assert!(all_filenames.contains(&&"file1.txt".to_string()));
+        assert!(all_filenames.contains(&&"sub/file2.txt".to_string()));
+        Ok(())
+    }
+
+    #[test]
     fn test_compute_hash_same_content() -> io::Result<()> {
         let temp_dir = TempDir::new()?;
         let root = temp_dir.path();
