@@ -1,0 +1,10 @@
+User: Unknown
+Start Time: 2025-01-28 14:01:54
+End Time: 2025-01-28 14:01:54
+Duration: 50.51ms
+Source Directory: "C:\\Users\\andre\\Documents\\GitHub\\missing-file-finder\\resources\\source"
+Target Directory: "C:\\Users\\andre\\Documents\\GitHub\\missing-file-finder\\resources\\target"
+Comparison Method: hash
+
+Files present in source directory, but not the target directory:
+None
