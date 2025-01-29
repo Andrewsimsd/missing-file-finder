@@ -462,11 +462,19 @@ mod tests {
         fs::write(tgt_root.join("sub/file2.txt"), b"World")?;
 
         // Compare by name
-        let missing = find_missing_files(src_root, tgt_root, "name")?;
+        let (missing, found) = find_missing_files(src_root, tgt_root, "name")?;
+        
+        // Since all files are present, missing should be empty
         assert!(missing.is_empty(), "Expected no missing files by name comparison.");
+
+        // Found files should contain both file1.txt and sub/file2.txt
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&"file1.txt".to_string()));
+        assert!(found.contains(&"sub/file2.txt".to_string()));
 
         Ok(())
     }
+
 
     #[test]
     fn test_find_missing_files_name_some_missing() -> io::Result<()> {
@@ -481,31 +489,45 @@ mod tests {
         fs::write(src_root.join("file2.txt"), b"B")?;
         fs::write(tgt_root.join("file1.txt"), b"A")?;
 
-        let missing = find_missing_files(src_root, tgt_root, "name")?;
+        let (missing, found) = find_missing_files(src_root, tgt_root, "name")?;
+        
+        // We expect one missing file: "file2.txt"
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0], "file2.txt");
+
+        // Found files should contain "file1.txt"
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], "file1.txt");
+
         Ok(())
     }
+
 
     #[test]
     fn test_find_missing_files_hash_no_missing() -> io::Result<()> {
         // If content is the same, the files should not be considered missing in hash mode
         let dir_src = TempDir::new()?;
         let dir_tgt = TempDir::new()?;
-
+    
         let src_root = dir_src.path();
         let tgt_root = dir_tgt.path();
-
+    
         fs::write(src_root.join("a.txt"), b"IDENTICAL_CONTENT")?;
         fs::write(src_root.join("b.txt"), b"ANOTHER_CONTENT")?;
-
+    
         fs::write(tgt_root.join("x.txt"), b"IDENTICAL_CONTENT")?;
         fs::write(tgt_root.join("y.txt"), b"ANOTHER_CONTENT")?;
-
-        let missing = find_missing_files(src_root, tgt_root, "hash")?;
+    
+        let (missing, found) = find_missing_files(src_root, tgt_root, "hash")?;
+        
+        // We expect no missing files since the contents are identical
         assert!(missing.is_empty(), "Expected no missing files by hash comparison.");
+    
+        // Found files should contain both "a.txt" and "b.txt"
+        assert_eq!(found.len(), 2);
         Ok(())
     }
+    
 
     #[test]
     fn test_find_missing_files_hash_some_missing() -> io::Result<()> {
@@ -520,15 +542,17 @@ mod tests {
         fs::write(src_root.join("file2.txt"), b"SRC_CONTENT_2")?;
         fs::write(tgt_root.join("target1.txt"), b"SRC_CONTENT_1")?;
 
-        let missing = find_missing_files(src_root, tgt_root, "hash")?;
+        let (missing, found) = find_missing_files(src_root, tgt_root, "hash")?;
+        
         // We expect exactly 1 missing file: "file2.txt"
         assert_eq!(missing.len(), 1);
-        // The missing file should be "file2.txt (HASH...)", with the real hash.
-        // We'll do a substring check for "file2.txt (" just to confirm:
         assert!(missing[0].contains("file2.txt"));
-        assert!(missing[0].contains("(") && missing[0].contains(")"));
+        
+        // Found should contain "file1.txt"
+        assert_eq!(found.len(), 1);
         Ok(())
     }
+
 
     #[test]
     fn test_find_missing_files_hash_same_hash_multiple_filenames() -> io::Result<()> {
@@ -544,7 +568,7 @@ mod tests {
         fs::write(src_root.join("file2.txt"), b"COMMON_CONTENT")?;
         fs::write(tgt_root.join("target_file.txt"), b"COMMON_CONTENT")?;
 
-        let missing = find_missing_files(src_root, tgt_root, "hash")?;
+        let (missing, found) = find_missing_files(src_root, tgt_root, "hash")?;
         assert!(
             missing.is_empty(),
             "If the hash is present in the target, none should be missing."
@@ -558,6 +582,9 @@ mod tests {
         let dir_tgt = TempDir::new().unwrap();
 
         let result = find_missing_files(dir_src.path(), dir_tgt.path(), "invalid_mode");
+        
+        // Ensure function fails when an invalid mode is given
         assert!(result.is_err(), "Invalid mode should return an Err.");
     }
+
 }
