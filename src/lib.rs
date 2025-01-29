@@ -6,7 +6,7 @@ use std::{
 };
 use chrono::{Local, DateTime};
 use fern::Dispatch;
-use log::{error};
+use log::{error, info};
 use walkdir::WalkDir;
 use sha2::{Sha256, Digest};
 use std::fs::File;
@@ -72,6 +72,10 @@ fn collect_file_hashes_parallel(root: &Path) -> io::Result<HashMap<String, Vec<S
     for (hash, path_str) in hashed_entries {
         hash_map.entry(hash).or_default().push(path_str);
     }
+
+    let file_count: usize = hash_map.values().map(Vec::len).sum();
+    info!("Collected {} unique hashes covering {} files from {:?}", hash_map.len(), file_count, root);
+
     Ok(hash_map)
 }
 
@@ -87,6 +91,9 @@ fn collect_file_names(root: &Path) -> io::Result<HashSet<String>> {
             }
         }
     }
+    let count = names.len();
+    info!("Collected {} file names from {:?}", count, root);
+
     Ok(names)
 }
 
@@ -125,16 +132,16 @@ pub fn find_missing_files(
     source_dir: &Path,
     target_dir: &Path,
     compare_mode: &str,
-) -> io::Result<Vec<String>> {
+) -> io::Result<(Vec<String>, Vec<String>)> {
     match compare_mode {
         "name" => {
             // single-threaded is fine for collecting names
             let source_names = collect_file_names(source_dir)?;
             let target_names = collect_file_names(target_dir)?;
-            Ok(source_names
-                .difference(&target_names)
-                .cloned()
-                .collect::<Vec<_>>())
+            let missing_files: Vec<String> = source_names.difference(&target_names).cloned().collect();
+            let found_files: Vec<String> = source_names.intersection(&target_names).cloned().collect();
+            info!("{} files found, {} files missing using name comparison) between {:?} and {:?}", found_files.len(), missing_files.len(), source_dir, target_dir);
+            Ok((missing_files, found_files))
         }
         "hash" => {
             // now use the new parallel version
@@ -154,7 +161,15 @@ pub fn find_missing_files(
                     }
                 }
             }
-            Ok(results)
+            info!("Found {} missing files (hash comparison) between {:?} and {:?}", results.len(), source_dir, target_dir);
+            let found_hashes: Vec<String> = source_keys.intersection(&target_keys).cloned().collect();
+            let found_files: Vec<String> = found_hashes.iter()
+                .filter_map(|hash| source_hashes.get(hash))
+                .flatten()
+                .cloned()
+                .collect();
+
+            Ok((results, found_files))
         }
         _ => {
             Err(io::Error::new(
@@ -181,6 +196,7 @@ pub fn write_report(
     target_dir: &Path,
     compare_mode: &str,
     missing_files: &[String],
+    found_files: &[String],
 ) -> io::Result<()> {
     let mut report = fs::File::create(report_filename)?;
     writeln!(report, "User: {}", user)?;
@@ -202,7 +218,15 @@ pub fn write_report(
             writeln!(report, "{}", file)?;
         }
     }
-
+    writeln!(report, "\nFiles found in both source and target directory:")?;
+    if found_files.is_empty() {
+        writeln!(report, "None")?;
+    } else {
+        for file in found_files {
+            let full_path = source_dir.join(file);
+            writeln!(report, "{} -> {:?}", file, full_path)?;
+        }
+    }
     Ok(())
 }
 

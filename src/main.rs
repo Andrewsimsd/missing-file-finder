@@ -41,7 +41,7 @@ fn main() -> io::Result<()> {
     );
 
     // We'll collect missing files differently depending on compare mode.
-    let missing_files = match find_missing_files(source_dir, target_dir, compare_mode) {
+    let (missing_files, found_files) = match find_missing_files(source_dir, target_dir, compare_mode) {
         Ok(files) => files,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -50,12 +50,21 @@ fn main() -> io::Result<()> {
         }
     };
 
+    if missing_files.is_empty() {
+        info!("No missing files found.");
+    } else {
+        info!("{} missing files found.", missing_files.len());
+    }
+
     let end_timestamp = Local::now();
     let duration = start_time.elapsed();
 
     let report_filename = "missing_files_report.txt";
-    let user = env::var("USER").unwrap_or_else(|_| "Unknown".into());
+    let user = env::var("USER")
+    .or_else(|_| env::var("USERNAME")) // Fallback for Windows
+    .unwrap_or_else(|_| "Unknown".into());
 
+    info!("Writing report to '{}'", report_filename);
     write_report(
         report_filename,
         &user,
@@ -66,10 +75,16 @@ fn main() -> io::Result<()> {
         target_dir,
         compare_mode,
         &missing_files,
+        &found_files,
     )?;
 
     info!("Comparison completed. {} missing files found.", missing_files.len());
     info!("Report saved to {}", report_filename);
+
+    info!(
+        "Comparison completed in {:.2?} seconds.",
+        duration.as_secs_f64()
+    );
 
     Ok(())
 }
