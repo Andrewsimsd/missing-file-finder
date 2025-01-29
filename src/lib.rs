@@ -28,6 +28,7 @@ pub fn setup_logger() -> Result<(), fern::InitError> {
         })
         .level(log::LevelFilter::Info)
         .chain(std::fs::File::create("missing_file_finder.log")?)
+        .chain(std::io::stdout()) // Log to console
         .apply()?;
     Ok(())
 }
