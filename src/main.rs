@@ -17,8 +17,21 @@ fn main() -> io::Result<()> {
 
     // Parse args
     let args: Vec<String> = env::args().collect();
+    if args.len() == 2 && (args[1] == "--help" || args[1] == "-h") {
+        println!(
+            "Usage: {} <source_dir> <target_dir> <compare_mode: name|hash>\n\n\
+            Compares files between a source and target directory to detect missing files.\n\n\
+            Options:\n\
+            --help, -h          Show this help message\n\
+            <compare_mode>      'name' identifies missing files based on file names, 'hash' identifies missing files based on file contents\n\n\
+            Example:\n\
+            {} /path/to/source /path/to/target name",
+            args[0], args[0]
+        );
+        return Ok(());
+    }
     if args.len() != 4 {
-        eprintln!("Usage: {} <source_dir> <target_dir> <compare_mode: name|hash>", args[0]);
+        eprintln!("Invalid arguments. Use --help for usage instructions.");
         return Ok(());
     }
 
