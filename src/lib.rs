@@ -39,18 +39,27 @@ pub fn setup_logger() -> Result<(), fern::InitError> {
 
 /// Collects file hashes in parallel, returning a `HashMap<hash, Vec<relative_path>>`.
 fn collect_file_hashes_parallel(root: &Path) -> io::Result<HashMap<String, Vec<String>>> {
+    use indicatif::{ProgressBar, ProgressStyle};
     // 1) Gather all file entries
     let paths: Vec<_> = WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
         .collect();
-
+    #[cfg(not(test))]
+    let pb = ProgressBar::new(paths.len() as u64);
+    #[cfg(not(test))]
+    pb.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} files ({eta})")
+        .unwrap()
+        .progress_chars("##-"));
     // 2) Compute hashes in parallel
     //    For each file, return Some((hash, relative_filename)) or None on error
     let hashed_entries: Vec<(String, String)> = paths
         .par_iter()
         .filter_map(|entry| {
+            #[cfg(not(test))]
+            pb.inc(1); // Increment progress bar
             let rel_path = match entry.path().strip_prefix(root) {
                 Ok(rp) => rp.to_string_lossy().replace('\\', "/"),
                 Err(_) => return None,
@@ -66,7 +75,8 @@ fn collect_file_hashes_parallel(root: &Path) -> io::Result<HashMap<String, Vec<S
             }
         })
         .collect();
-
+    #[cfg(not(test))]
+    pb.finish_with_message("Hash computation complete");
     // 3) Group by hash in a standard HashMap
     let mut hash_map: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -100,20 +110,32 @@ fn collect_file_names(root: &Path) -> io::Result<HashSet<String>> {
 
 /// Computes SHA-256 hash of the file.
 fn compute_hash(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Cannot open file {:?}: {}", path, e);
+            return Err(e);
+        }
+    };
+
     let mut buffer = [0; 8192];
     let mut hasher = Sha256::new();
 
     loop {
-        let bytes_read = file.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
+        let bytes_read = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                error!("Failed to read file {:?}: {}", path, e);
+                return Err(e);
+            }
+        };
         hasher.update(&buffer[..bytes_read]);
     }
 
     Ok(format!("{:x}", hasher.finalize()))
 }
+
 
 // -----------------------------------------------------------
 // Missing-files extraction function
@@ -146,7 +168,9 @@ pub fn find_missing_files(
         }
         "hash" => {
             // now use the new parallel version
+            info!("Collecting source directory hashes.");
             let source_hashes = collect_file_hashes_parallel(source_dir)?;
+            info!("Collecting target directory hashes.");
             let target_hashes = collect_file_hashes_parallel(target_dir)?;
 
             let source_keys: HashSet<_> = source_hashes.keys().cloned().collect();
@@ -568,7 +592,7 @@ mod tests {
         fs::write(src_root.join("file2.txt"), b"COMMON_CONTENT")?;
         fs::write(tgt_root.join("target_file.txt"), b"COMMON_CONTENT")?;
 
-        let (missing, found) = find_missing_files(src_root, tgt_root, "hash")?;
+        let (missing, _) = find_missing_files(src_root, tgt_root, "hash")?;
         assert!(
             missing.is_empty(),
             "If the hash is present in the target, none should be missing."
