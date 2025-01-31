@@ -1,60 +1,133 @@
-# Missing File Finder
+# 🔍 Missing File Finder
 
-## Overview
-This Rust application compares a source and target directory to identify files that exist in the source but are missing from the target. The target directory may have additional parent directories, and matches are detected accordingly. The tool can compare files by name or by hash for accuracy and efficiency.
+**Version:** 1.1.0  
+**Author:** Andrew Sims 
+**License:** MIT  
 
-## Features
-- Compare directories by file name or content hash.
-- Efficient hashing mechanism to avoid unnecessary full file hashing.
-- Generates a report listing missing files with detailed metadata.
-- Logs operations using the `fern` logging library.
+## 📌 Overview
 
+**Missing File Finder** is a Rust-based command-line tool designed to compare files between a **source** and **target** directory. It identifies files present in the source directory but missing in the target, based on either:
+- **Filename** comparison (simple and fast)
+- **File hash** comparison (content-based, ensuring true uniqueness)
 
-## Installation
-Ensure you have Rust installed. If not, install it via [Rustup](https://rustup.rs/):
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+This tool is **highly efficient**, featuring:
+✅ **Parallel processing** (using Rayon)  
+✅ **Real-time progress indicators**  
+✅ **Logging to both file and console**  
+✅ **Customizable output reports**  
 
-Clone the repository and build the project:
-```sh
-git clone <https://github.com/Andrewsimsd/missing-file-finder>
-cd <repository_name>
-cargo build --release
-```
+---
 
-## Usage
+## 🚀 Usage
+
 Run the application from the command line:
+
 ```sh
-./target/release/missing_file_finder <source_directory> <target_directory> <comparison_method>
+missing_file_finder <source_dir> <target_dir> <compare_mode> [output_file]
 ```
 
-**Arguments:**
-- `<source_directory>`: Path to the source directory. (The directory that contains the files you want to check for)
-- `<target_directory>`: Path to the target directory. (The directory that you want to check if the files exist in)
-- `<comparison_method>`: Either `name` for filename-based comparison or `hash` for content-based comparison.
+### **Arguments**
+| Argument       | Description                                      | Required | Example                    |
+|---------------|--------------------------------------------------|----------|----------------------------|
+| `<source_dir>` | Path to the source directory                    | ✅        | `/home/user/source`        |
+| `<target_dir>` | Path to the target directory                    | ✅        | `/home/user/backup`        |
+| `<compare_mode>` | `name` (filename-based) OR `hash` (content-based) | ✅        | `name` or `hash`           |
+| `[output_file]` | Optional output report filename (default used if omitted) | ❌        | `missing_files_report.txt` |
 
-### Example:
+---
+
+### **Example Usage**
+#### **Compare by Filename**
 ```sh
-./missing_file_finder /home/user/source /mnt/backup name
+missing_file_finder /home/user/source /home/user/backup name
+```
+#### **Compare by Hash**
+```sh
+missing_file_finder /home/user/source /home/user/backup hash
+```
+#### **Specify Output Report File**
+```sh
+missing_file_finder /home/user/source /home/user/backup hash custom_report.txt
+```
+#### **Display Help Message**
+```sh
+missing_file_finder --help
 ```
 
-## Output
-The application generates a `missing_files_report.txt` with the following details:
-- User who ran the report.
-- Start and end timestamps.
-- Duration of execution.
-- Directories compared.
-- Comparison method used.
-- List of missing files with full paths from the source.
+---
 
-## Logging
-Logs are saved in `compare_directories.log` with timestamps and operation details.
+## 📊 Features
 
-## License
-This project is licensed under the MIT License. See `LICENSE` for details.
+✅ **Multi-threaded Execution:** Uses **Rayon** for parallel hashing.  
+✅ **Real-time Progress Bar:** Uses **indicatif** to track processing.  
+✅ **Log Output:** All operations are logged to `missing_file_finder.log`.  
+✅ **Customizable Report Output:** Generates a structured `.txt` report.  
+✅ **Error Handling:** Gracefully handles invalid inputs and access issues.  
 
-## Contributions
-Contributions are welcome! Feel free to submit issues and pull requests.
+---
 
+## 📄 Report Format
+
+The report includes:
+- User information
+- Start and end timestamps
+- Duration of execution
+- Source and target directory details
+- Comparison method used
+- List of missing files (if any)
+- List of found files (if applicable)
+
+Example:
+```
+User: johndoe
+Start Time: 2025-01-30 14:15:00
+End Time: 2025-01-30 14:15:05
+Duration: 5.02s
+Source Directory: /home/user/source
+Target Directory: /home/user/backup
+Comparison Method: hash
+
+Files present in source directory, but not in target directory:
+- documents/report.pdf (e3b0c4...)
+- projects/code.rs (b4ef6d...)
+
+Files found in both source and target directory:
+- images/photo1.jpg -> /home/user/source/images/photo1.jpg
+- music/song.mp3 -> /home/user/source/music/song.mp3
+```
+
+---
+
+## ⚙️ Development & Testing
+
+### **Run Tests**
+The project includes unit tests for hash generation, filename collection, and file comparison. Run tests using:
+
+```sh
+cargo test
+```
+
+### **Debug Logging**
+To enable debug logs while running:
+
+```sh
+RUST_LOG=debug cargo run --release -- <source_dir> <target_dir> hash
+```
+
+
+## 📜 License
+
+This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
+
+---
+
+## 🛠️ Dependencies
+
+- [**walkdir**](https://crates.io/crates/walkdir) - Recursive file traversal  
+- [**rayon**](https://crates.io/crates/rayon) - Parallel computation  
+- [**sha2**](https://crates.io/crates/sha2) - SHA-256 hashing  
+- [**fern**](https://crates.io/crates/fern) - Logger backend  
+- [**indicatif**](https://crates.io/crates/indicatif) - Progress bar  
+
+---
 
