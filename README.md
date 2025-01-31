@@ -10,7 +10,7 @@
 - **Filename** comparison (simple and fast)
 - **File hash** comparison (content-based, ensuring true uniqueness)
 
-This tool is **highly efficient**, featuring:
+This tool is **highly efficient**, featuring:  
 ✅ **Parallel processing** (using Rayon)  
 ✅ **Real-time progress indicators**  
 ✅ **Logging to both file and console**  
