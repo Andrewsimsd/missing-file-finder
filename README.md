@@ -1,7 +1,7 @@
 # 🔍 Missing File Finder
 
 **Version:** 1.1.0  
-**Author:** Andrew Sims 
+**Author:** Andrew Sims   
 **License:** MIT  
 
 ## 📌 Overview
